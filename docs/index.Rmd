@@ -1,0 +1,568 @@
+---
+title: "EMPallA Study Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+
+---
+
+UCSD Health
+==================
+
+Row
+-------------------------------------
+
+```{r message=FALSE, warning=FALSE, error=FALSE, echo=FALSE}
+library(flexdashboard)
+library(xts)
+library(dygraphs)
+library(tidyverse)
+library(data.table)
+library(redcapAPI)
+library(lubridate)
+library(ggplot2)
+library(kableExtra)
+library(dplyr)
+library(formattable)
+library(janitor)
+
+TOKEN <- "AB3BFF7C21C0DE35E756DC850E973A2D"
+rcon <- redcapConnection(url = 'https://openredcap.nyumc.org/apps/redcap/api/',
+                         token=TOKEN)
+
+#screened
+scns <- data.table(exportReports(rcon, content='report', report_id='129302',
+                                    rawOrLabel='raw',
+                                    rawOrLabelHeaders='raw',
+                                    exportCheckboxLabel='true',
+                                    returnFormat='csv'))
+```
+
+
+### Screening
+
+```{r message=FALSE, warning=FALSE, error=FALSE, echo=FALSE}
+screens <- scns[redcap_data_access_group=="ucsd_health",]
+#screens <- scns[is.na(redcap_data_access_group), redcap_data_access_group := "NYU Hospital - Tisch"]
+screens[redcap_data_access_group=="bellevue_hospital", redcap_data_access_group := "Bellevue Hospital Center"]
+screens[redcap_data_access_group=="nyu__tisch_hospita", redcap_data_access_group := "NYU Hospital - Tisch"]
+screens[redcap_data_access_group=="nyu__brooklyn_hosp", redcap_data_access_group := "NYU Hospital - Brooklyn"]
+screens[redcap_data_access_group=="brigham_and_womens", redcap_data_access_group := "Brigham and Women's Hospital"]
+screens[redcap_data_access_group=="beaumont__royal_oa", redcap_data_access_group := "Beaumont - Royal Oak"]
+screens[redcap_data_access_group=="beaumont__troy", redcap_data_access_group := "Beaumont - Troy"]
+screens[redcap_data_access_group=="wexner_medical_cen", redcap_data_access_group := "Ohio State University"]
+screens[redcap_data_access_group=="university_of_flor", redcap_data_access_group := "University of Florida Shands"]
+screens[redcap_data_access_group=="yale_new_haven_hos", redcap_data_access_group := "Yale New Haven Hospital"]
+screens[redcap_data_access_group=="hackensack_univers", redcap_data_access_group := "HUMC"]
+screens[redcap_data_access_group=="nyu__winthrop_hosp", redcap_data_access_group := "NYU Hospital - Winthrop"]
+screens[redcap_data_access_group=="ucsd_health", redcap_data_access_group := "UCSD Health"]
+screens[redcap_data_access_group=="uc_irvine_health", redcap_data_access_group := "UC Irvine Health"]
+screens[redcap_data_access_group=="ucla_medical_cente", redcap_data_access_group := "UCLA Medical Center"]
+screens[redcap_data_access_group=="northwestern_medic", redcap_data_access_group := "Northwestern Medicine"]
+screens[redcap_data_access_group=="weill_cornell", redcap_data_access_group := "Weill Cornell"]
+screens[redcap_data_access_group=="rush_university", redcap_data_access_group := "Rush University"]
+screens[redcap_data_access_group=="atlantic_health", redcap_data_access_group := "Atlantic Health"]
+colnames(screens)[5] <- "siteid"
+
+screens <- screens[!is.na(visdate_ehr) & redcap_event_name=="patient_baseline_arm_1",]
+
+#Oldest group of sites
+start_date <- as.Date(today() - weeks(16))
+end_date <- as.Date(today())
+n_days <- interval(start_date,end_date)/days(1)
+
+alldays <- as.data.table(start_date + days(0:n_days))
+alldays[, visdate_ehr := as.Date(V1)]
+allweeks <- alldays[, visdate_ehr := floor_date(visdate_ehr, unit = "week", week_start = getOption("lubridate.week.start", 5))]
+allweeks[,V1:=NULL]
+allweeks <- unique(allweeks)
+
+
+
+#days
+screens[, visdate_ehr := as.Date(visdate_ehr)]
+screens[, visdate_ehr := as.Date(visdate_ehr, format = "%m/%d/%Y")]
+
+#NUMBER OF unique days by site by week
+#screens[, visdate_ehr := floor_date(visdate_ehr, unit = "week", week_start = getOption("lubridate.week.start", 5))]
+screens[gfrhigh=="No" | nyha_classed== "No - Class 3 or 4 listed" | fevhigh=="No" | copd_classed=="No - Stage 3 or 4 listed" |
+         nyha_stage=="I get short of breath or tired, or have palpitations when performing day to day activities. For example, walking on the flat." | 
+          nyha_stage=="I feel breathless at rest, and am mostly housebound. I am unable to carry out any physical activity without getting short of breath or tired, or having palpitations." | nothomeoxy=="No" | disease=="Yes" | copd_classed=="Not listed in EHR" | nyha_classed=="Not listed in EHR", legit := 1]
+
+screens[is.na(legit), notnec := 1]
+#ineligible
+#run separate report to make sure no non-advanced cancer patients are going into REDCap
+#CHECKED AND WORKS
+screens[legit==1 & (cancerunaware=="Yes" | pallcare=="Yes" | telephone=="Patient refused" | telephone=="Patient doesn't know" |
+                            pallcare_self=="Patient refused" | hospice=="Patient refused" | mmrc=="Patient refused" | sixmohospice=="Yes" | exclinsurance=="Yes" | optout=="Yes" |
+                            snf_hosp=="Yes" | dementia=="Yes" | outofstate=="Yes" | language_spoken=="Other" | telephone=="No" |
+                            pallcare_self=="Yes" | hospice=="Yes" | geographic=="No"), ineligible := 1]
+
+screens[language_spoken=="Spanish", languagebarrier := 0]
+screens[language_spoken=="Other", languagebarrier := 1]
+screens[telephone=="No" | telephone=="Patient refused", notele := 1]
+screens[telephone=="Yes", notele := 0]
+#FIX PALLCARE AND HOSPICE BELOW SO DONT KNOW SHOWS UP AS NO
+#screens[pallcare_self=="Patient doesn't know", pallcare := 0]
+#screens[hospice==-7, hospice := 0]
+
+screens[, week := week(ymd(screens$visdate_ehr))]
+screens[, wday := wday(ymd(screens$visdate_ehr), label =TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 7))]
+
+screens[, month_name := lubridate::month(visdate_ehr, label = TRUE)]
+screens[, year := year(visdate_ehr)]
+screens[, today := floor_date(today(), unit = "week", week_start = getOption("lubridate.week.start", 7))]
+
+#screens %>%
+#  group_by(siteid, wday) %>%
+#  summarise(no_rows = length(wday))
+
+#screens <- as.data.table(screens)
+screens[((legit==1) & (cancerunaware=="No" | is.na(cancerunaware)) & nodisobs=="No" & (pallcare=="No" | is.na(pallcare)) & 
+          (sixmohospice=="No" | is.na(sixmohospice)) & 
+          (exclinsurance=="No" | is.na(exclinsurance)) & (optout=="No" | is.na(optout)) & (snf_hosp=="No" | is.na(snf_hosp)) & 
+          (dementia=="No" | is.na(dementia)) & (outofstate=="No" | outofstate=="Don't know" | is.na(outofstate)) & 
+          (geographic=="Yes" | is.na(geographic)) & language_spoken=="Spanish"), eligifspan := 1]
+
+screens[((legit==1) & (cancerunaware=="No" | is.na(cancerunaware)) & nodisobs=="No" & (pallcare=="No" | is.na(pallcare)) & 
+          (sixmohospice=="No" | is.na(sixmohospice)) & 
+          (exclinsurance=="No" | is.na(exclinsurance)) & (optout=="No" | is.na(optout)) & (snf_hosp=="No" | is.na(snf_hosp)) & 
+          (dementia=="No" | is.na(dementia)) & (outofstate=="No" | outofstate=="Don't know" | is.na(outofstate)) & 
+          (geographic=="Yes" | is.na(geographic)) & (language=="Yes")), eligcall := 1]
+
+screens[((legit==1) & (cancerunaware=="No" | is.na(cancerunaware)) & (nodisobs=="Yes" | is.na(nodisobs)) & (pallcare=="No" | is.na(pallcare)) & 
+          (sixmohospice=="No" | is.na(sixmohospice)) & 
+          (exclinsurance=="No" | is.na(exclinsurance)) & (optout=="No" | is.na(optout)) & (snf_hosp=="No" | is.na(snf_hosp)) & 
+          (dementia=="No" | is.na(dementia)) & (outofstate=="No" | outofstate=="Don't know" | is.na(outofstate)) & 
+          (geographic=="Yes" | is.na(geographic)) & (language=="Yes")), trackadmit := 1]
+
+screens[((legit==1) & (cancerunaware=="No" | is.na(cancerunaware)) & nodisobs=="No" & (pallcare=="No" | is.na(pallcare)) & 
+          (pallcare_self=="No" | pallcare_self=="Patient doesn't know") & (sixmohospice=="No" | is.na(sixmohospice)) & (hospice=="No" | hospice=="Patient doesn't know") & 
+          (exclinsurance=="No" | is.na(exclinsurance)) & (optout=="No" | is.na(optout)) & (snf_hosp=="No" | is.na(snf_hosp)) & 
+          (dementia=="No" | is.na(dementia)) & (outofstate=="No" | outofstate=="Don't know" | is.na(outofstate)) & 
+          (geographic=="Yes" | is.na(geographic)) & (language_spoken=="Spanish" | language=="Yes") & telephone=="Yes"), eligible := 1]
+
+screens[legit==1 & nodisobs=="Yes" & ineligible==1, admit := 1]
+
+#Eligible not enrolled
+screens[, visdate_ic := as.Date(visdate_ic, format = "%Y-%m-%d")]
+screens[, date_rand := as.Date(date_rand, format = "%Y-%m-%d")]
+screens[eligible==1 & is.na(visdate_ic), eligiblenotenrolled := 1]
+
+#CHECKED AND 90% APPROVED, JUST NEED A TRIPLE CHECK
+ineltable <- screens[, .(legit = sum(na.omit(legit==1)),
+                         notnec = sum(na.omit(notnec==1)),
+                         dementia = sum(na.omit(dementia=="Yes")),
+                         cancnewdiagnosis = sum(na.omit(cancerunaware=="Yes")),
+                         admitted = sum(na.omit(admit==1)),
+                         pallcarehosp = sum(sum(na.omit(pallcare=="Yes")) + sum(na.omit(hospice=="Yes")) + 
+                                                            sum(na.omit(pallcare_self=="Yes")) + sum(na.omit(sixmohospice=="Yes"))),
+                         insurance = sum(na.omit(exclinsurance=="Yes")),
+                         noncancerctr = sum(na.omit(optout=="Yes")),
+                         snfalf = sum(na.omit(snf_hosp=="Yes")),
+                         outofstate = sum(na.omit(outofstate=="Yes")),
+                         languagebarrier = sum(na.omit(languagebarrier==1)),
+                         nophone = sum(na.omit(notele==1)),
+                         eligifspan = sum(na.omit(eligifspan==1)),
+                         eligcall = sum(na.omit(eligcall==1)),
+                         trackadmit = sum(na.omit(trackadmit==1)),
+                         eligible = sum(na.omit(eligible==1))
+),
+keyby=c("siteid", "visdate_ehr")]
+
+#ineltable <- melt(ineltable)
+#ineltable <- ineltable[order(-value)]
+
+
+
+
+#if remove 4462-1 from below, reduces rand by 1
+redcap <- screens[,lapply(.SD, function(x) x[which(!is.na(x))[1]]), subjid]
+
+
+#refusalreasons <- scns[, .(refusal = unlist(strsplit(not_enrolled_refusal, ","))), keyby = subjid]
+#tease out reasons not enrolled
+#eligiblenotenrolled[, not_enrolled_refusal := str_split(not_enrolled_refusal, ",")]
+
+#refusalreasons[refusal=="1", refusal := "death"]#Associates palliative care with hospice/death OR came to ED for reason other than qualifying illness"]
+#refusalreasons[refusal=="2", refusal := "Doesn't feel her/his illness is serious enough for palliative care"]
+#refusalreasons[refusal=="5", refusal := "OP"]
+#refusalreasons[refusal=="6", refusal := "Doesn't want to complete baseline questionnaires"]
+#refusalreasons[refusal=="7", refusal := "Doesn't want telephonic palliative care"]
+#refusalreasons[refusal=="8", refusal := "Too burdened"]
+#refusalreasons[refusal=="9", refusal := "Previous negative research experience/ stigma"]
+#refusalreasons[refusal=="10", refusal := "Fear of providing confidential information/ privacy breach"]
+#refusalreasons[refusal=="11", refusal := "Doesn't feel well enough to participate"]
+#refusalreasons[refusal=="12", refusal := "Disabled and cannot participate in telephonic arm (e.g. hard of hearing)"]
+#refusalreasons[refusal=="14", refusal := "Satisfied with current medical care"]
+#refusalreasons[refusal=="15", refusal := "Not interested in research participation"]
+#refusalreasons[refusal=="16", refusal := "Did not want to make decision without family/caregiver present"]
+#refusalreasons[refusal=="17", refusal := "Joint patient/family decision to decline participation"]
+#refusalreasons[refusal=="13", refusal := "Other"]
+
+
+#refusalreasons <- redcap[, .(death = sum(na.omit(not_enrolled_refusal___1=="Checked")),
+#                                     notser = sum(na.omit(not_enrolled_refusal___2=="Checked")),
+#                                     OP = sum(na.omit(not_enrolled_refusal___5=="Checked")),
+ #                                    nobase = sum(na.omit(not_enrolled_refusal___6=="Checked")),
+ #                                    tele = sum(na.omit(not_enrolled_refusal___7=="Checked")),
+#                                     tooburd = sum(na.omit(not_enrolled_refusal___8=="Checked")),
+#                                     prevneg = sum(na.omit(not_enrolled_refusal___9=="Checked")),
+#                                     fearconf = sum(na.omit(not_enrolled_refusal___10=="Checked")),
+#                                     notwell = sum(na.omit(not_enrolled_refusal___11=="Checked")),
+#                                     disabled = sum(na.omit(not_enrolled_refusal___12=="Checked")),
+#                                     satisfied = sum(na.omit(not_enrolled_refusal___14=="Checked")),
+#                                     notint = sum(na.omit(not_enrolled_refusal___15=="Checked")),
+#                                     waitfam = sum(na.omit(not_enrolled_refusal___16=="Checked")),
+#                                     jointfam = sum(na.omit(not_enrolled_refusal___17=="Checked")),
+#                                     other = sum(na.omit(	not_enrolled_refusal___13=="Checked"))
+                                     
+#),
+#keyby=c("siteid", "visdate_ehr")]
+#tease out reasons not enrolled
+redcap[not_enrolled_refusal___1=="Checked", not_enrolled_refusal___1 := "Associates palliative care with death"]#Associates palliative care with hospice/death OR came to ED for reason other than qualifying illness"]
+redcap[not_enrolled_refusal___2=="Checked", not_enrolled_refusal___2 := "Doesn't feel her/his illness is serious enough for palliative care"]
+redcap[not_enrolled_refusal___5=="Checked", not_enrolled_refusal___5 := "Doesn't want outpatient palliative care"]
+redcap[not_enrolled_refusal___6=="Checked", not_enrolled_refusal___6 := "Doesn't want to complete baseline questionnaires"]
+redcap[not_enrolled_refusal___7=="Checked", not_enrolled_refusal___7 := "Doesn't want telephonic palliative care"]
+redcap[not_enrolled_refusal___8=="Checked", not_enrolled_refusal___8 := "Too burdened by other medical appointments/not enough time"]
+redcap[not_enrolled_refusal___9=="Checked", not_enrolled_refusal___9 := "Previous negative research experience/ stigma"]
+redcap[not_enrolled_refusal___10=="Checked", not_enrolled_refusal___10 := "Fear of providing confidential information/ privacy breach"]
+redcap[not_enrolled_refusal___11=="Checked", not_enrolled_refusal___11 := "Doesn't feel well enough to participate"]
+redcap[not_enrolled_refusal___12=="Checked", not_enrolled_refusal___12 := "Disabled and cannot participate in telephonic arm (e.g. hard of hearing)"]
+redcap[not_enrolled_refusal___14=="Checked", not_enrolled_refusal___14 := "Satisfied with current medical care"]
+redcap[not_enrolled_refusal___15=="Checked", not_enrolled_refusal___15 := "Not interested in research participation"]
+redcap[not_enrolled_refusal___16=="Checked", not_enrolled_refusal___16 := "Did not want to make decision without family/caregiver present"]
+redcap[not_enrolled_refusal___17=="Checked", not_enrolled_refusal___17 := "Joint patient/family decision to decline participation"]
+redcap[not_enrolled_refusal___13=="Checked", not_enrolled_refusal___13 := "Other"]
+
+refusalreasons <- redcap[, c("siteid", "visdate_ehr", "not_enrolled_refusal___1", "not_enrolled_refusal___2", 
+                                                                                             "not_enrolled_refusal___5", "not_enrolled_refusal___6", 
+                                                                                             "not_enrolled_refusal___7", "not_enrolled_refusal___8", 
+                                                                                             "not_enrolled_refusal___9", "not_enrolled_refusal___10", 
+                                                                                             "not_enrolled_refusal___11", "not_enrolled_refusal___12", 
+                                                                                             "not_enrolled_refusal___14", "not_enrolled_refusal___15", 
+                                                                                             "not_enrolled_refusal___16", "not_enrolled_refusal___17", 
+                                                                                             "not_enrolled_refusal___13")]
+
+refusals <- melt(refusalreasons, id.vars = c("siteid", "visdate_ehr"), measure.vars = c("not_enrolled_refusal___1", "not_enrolled_refusal___2", 
+                                                                                             "not_enrolled_refusal___5", "not_enrolled_refusal___6", 
+                                                                                             "not_enrolled_refusal___7", "not_enrolled_refusal___8", 
+                                                                                             "not_enrolled_refusal___9", "not_enrolled_refusal___10", 
+                                                                                             "not_enrolled_refusal___11", "not_enrolled_refusal___12", 
+                                                                                             "not_enrolled_refusal___14", "not_enrolled_refusal___15", 
+                                                                                             "not_enrolled_refusal___16", "not_enrolled_refusal___17", 
+                                                                                             "not_enrolled_refusal___13"))
+#assign refusal to the code
+refusals <- refusals[!is.na(value) & value!="Unchecked", c("siteid", "visdate_ehr", "value")]
+colnames(refusals)[colnames(refusals) == "value"] = "Refusal"
+
+refusals[, Refusal := paste0(Refusal, ' ')]
+
+refusals <- as.data.table(refusals)[, toString(Refusal), by = list(siteid, visdate_ehr)]
+
+merged <- merge(ineltable, refusals, by = c("visdate_ehr", "siteid"), all=TRUE)
+
+#screens <- screens[, c("visdate_ehr", "siteid")]
+
+
+merged[, week := week(ymd(merged$visdate_ehr))]
+merged[, wday := wday(ymd(merged$visdate_ehr), label =TRUE, abbr = TRUE, week_start = getOption("lubridate.week.start", 7))]
+
+merged[, month_name := lubridate::month(visdate_ehr, label = TRUE)]
+merged[, year := year(visdate_ehr)]
+merged[, today := floor_date(today(), unit = "week", week_start = getOption("lubridate.week.start", 7))]
+#screens[, fourmonthssago := (today - weeks(16))]
+merged <- merged[visdate_ehr >= today]
+merged <- merged[,!c("week", "month_name", "year", "today")]
+
+#don't start over again at Jan 2019
+#screens[, week := trunc((visdate_ehr - ymd(20180101))/dweeks(1))]
+#very useful for seeing what the most popular days of the week are!
+#screeny <- screens[, c("visdate_ehr", "siteid")]
+daysscreened <- screens[visdate_ehr >= today]
+daysscreened <- daysscreened[, .N, keyby = .(siteid, wday)]
+
+merged <- merge(merged, daysscreened, by = c("siteid", "wday"))
+
+#all days
+start_date <- floor_date(today(), unit = "week", week_start = getOption("lubridate.week.start", 7))
+end_date <- ceiling_date(today(), unit = "week", week_start = getOption("lubridate.week.start", 7)) - days(1)
+n_days <- interval(start_date,end_date)/days(1)
+
+alldays <- as.data.table(start_date + days(0:n_days))
+alldays[, wday := as.Date(V1)]
+alldays[, wday := wday(ymd(wday), label =TRUE, abbr = TRUE)]
+alldays[,V1:=NULL]
+#allweeks <- unique(allweeks)
+
+allposs <- data.table(wday = rep(alldays$wday, each = 18),
+                      siteid = rep(c("Bellevue Hospital Center","NYU Hospital - Tisch", 
+                                     "NYU Hospital - Brooklyn", "Brigham and Women's Hospital",
+                                     "Beaumont - Royal Oak", "Beaumont - Troy",
+                                     "Ohio State University", "University of Florida Shands", 
+                                     "Yale New Haven Hospital", "NYU Hospital - Winthrop", 
+                                     "UCSD Health", "HUMC", "UC Irvine Health", "UCLA Medical Center",
+                                     "Atlantic Health", "Weill Cornell", "Rush University", "Northwestern Medicine"), times = 1))
+allposs[, siteid := as.character(siteid)]
+allposs <- allposs[siteid=="UCSD Health",]
+
+merger <- merge(merged, allposs, by= c("siteid", "wday"), all=TRUE)
+merger[is.na(N), N := 0]
+
+
+
+#merger[, V1 := lapply(V1, function(x) {gsub(",", "<br>", x)})]
+
+
+merger <- merger %>%
+  adorn_totals("row")
+
+options(knitr.kable.NA = '')
+merger %>% 
+select(wday, N, notnec, trackadmit, eligifspan, eligcall, eligible, V1, !c(visdate_ehr, legit, siteid)) %>%
+kable(format = "html", escape=F, col.names = c("Day", "Screens entered in REDCap", "Extra entries", "Tracking admission", "Eligible Spanish speaker", "Eligible to call",
+                                               "Answered patient interview questions", "Refusal reason(s)", "Dementia", "New Diagnosis", "Admit", "Pallcare/Hospice", 
+                                               "Uninsured", "Specialist not in network", "SNF/ALF", "Out of state", "Language", "No phone/Refused to answer")) %>%
+kable_styling(bootstrap_options="striped", full_width=F) %>%
+  column_spec(8, bold = F, border_right = T) %>%
+  row_spec(8, bold=T) %>%
+  add_header_above(c(" " = 8, "Reasons for Ineligibility" = 10))
+#to get number of reasons each refusal
+```
+
+[Tracking admission (link to REDCap report)](https://openredcap.nyumc.org/apps/redcap/redcap_v9.5.32/DataExport/index.php?pid=20072&report_id=134812 "Tracking admission")  
+[Eligible to call (link to REDCap report)](https://openredcap.nyumc.org/apps/redcap/redcap_v9.5.32/DataExport/index.php?pid=20072&report_id=134402 "Eligible to call")
+
+Row {.tabset .tabset-fade} {data-height=200}
+-------------------------------------
+
+### Enrollment Rate (this week) {data-height=200}
+
+```{r}
+TOKEN <- "AB3BFF7C21C0DE35E756DC850E973A2D"
+rcon <- redcapConnection(url = 'https://openredcap.nyumc.org/apps/redcap/api/',
+                         token=TOKEN)
+rands <- data.table(exportReports(rcon, content='report', report_id='54732',
+                                  rawOrLabel='raw',
+                                  rawOrLabelHeaders='raw',
+                                  exportCheckboxLabel='true',
+                                  returnFormat='csv'))
+```
+
+```{r}
+rands <- rands[redcap_data_access_group=="ucsd_health",]
+rands[, redcap_data_access_group := as.character(redcap_data_access_group)]
+rands[redcap_data_access_group=="bellevue_hospital", site := "Bellevue Hospital Center"]
+rands[redcap_data_access_group=="nyu__tisch_hospita", site := "NYU Hospital - Tisch"]
+rands[redcap_data_access_group=="nyu__brooklyn_hosp", site := "NYU Hospital - Brooklyn"]
+rands[redcap_data_access_group=="brigham_and_womens", site := "Brigham and Women's Hospital"]
+rands[redcap_data_access_group=="beaumont__royal_oa", site := "Beaumont - Royal Oak"]
+rands[redcap_data_access_group=="beaumont__troy", site := "Beaumont - Troy"]
+rands[redcap_data_access_group=="wexner_medical_cen", site := "Ohio State University"]
+rands[redcap_data_access_group=="university_of_flor", site := "University of Florida Shands"]
+rands[redcap_data_access_group=="yale_new_haven_hos", site := "Yale New Haven Hospital"]
+rands[redcap_data_access_group=="hackensack_univers", site := "HUMC"]
+rands[redcap_data_access_group=="nyu__winthrop_hosp", site := "NYU Hospital - Winthrop"]
+rands[redcap_data_access_group=="ucsd_health", site := "UCSD Health"]
+rands[redcap_data_access_group=="uc_irvine_health", site := "UC Irvine Health"]
+rands[redcap_data_access_group=="atlantic_health", site := "Atlantic Health"]
+rands[redcap_data_access_group=="northwestern_medic", site := "Northwestern Medicine"]
+rands[redcap_data_access_group=="rush_university", site := "Rush University"]
+rands[redcap_data_access_group=="ucla_medical_cente", site := "UCLA Medical Center"]
+rands[redcap_data_access_group=="weill_cornell", site := "Weill Cornell"]
+
+
+start_date <- as.Date("2018/4/1")
+start_date_adjusted <- as.Date("2018/6/10")
+n_weeks <- interval(start_date,today())/weeks(1)
+n_weeks_adjusted <- interval(start_date_adjusted, today())/weeks(1)
+study_goal <- 150
+
+Enrollment <- nrow(rands)/n_weeks
+n_weeks_quarter_from_today <- interval(today(), as.Date("2020/9/30"))/weeks(1)
+n_weeks_quarter_total <- interval(as.Date("2020/7/1"), as.Date("2020/9/30"))/weeks(1)
+
+goal_quarter <- 25
+goal_week <- 2
+#number enrolled this quarter
+enr_quarter <- rands[visdate_ehr >= "2020/07/01", ]
+#percent of quarter goal
+Quarter <- nrow(enr_quarter)/goal_quarter
+#cell_spec(percent(Quarter), "html", color = ifelse(Quarter >= .25 & !is.na(Quarter), "green", "red"))
+#number left to reach goal
+numLeftquarter <- goal_quarter - nrow(enr_quarter)
+#number enrolled this week
+rands[, today := floor_date(today(), unit = "week", week_start = getOption("lubridate.week.start", 7))]
+thisweek <- rands[visdate_ehr >= today, ]
+thisweeknum <- rands[visdate_ehr >= today, .N]
+#percent of weekly goal
+Week <- nrow(thisweek)/goal_week
+#cell_spec(percent(Week), "html", color = ifelse(Week >= .
+ineltable[, today := floor_date(today(), unit = "week", week_start = getOption("lubridate.week.start", 7))]
+
+eligcall <- ineltable[eligcall>0 & siteid=="UCSD Health" & visdate_ehr >= today,]
+
+gauge(nrow(thisweek)/sum(eligcall$eligcall) * 100, min = 0, max = 100, symbol = '%', gaugeSectors(
+  success = c(80,100), warning = c(40, 79), danger = c(0, 39) 
+))
+
+```
+
+
+### Weekly Trends {data-height=200}
+
+```{r}
+library(flexdashboard)
+library(xts)
+library(dygraphs)
+library(tidyverse)
+library(data.table)
+library(redcapAPI)
+library(lubridate)
+library(ggplot2)
+library(kableExtra)
+library(dplyr)
+library(formattable)
+library(janitor)
+
+TOKEN <- "AB3BFF7C21C0DE35E756DC850E973A2D"
+rcon <- redcapConnection(url = 'https://openredcap.nyumc.org/apps/redcap/api/',
+                         token=TOKEN)
+
+#enrolled including all screen fails
+enrolled <- data.table(exportReports(rcon, content='report', report_id='29972',
+                                     rawOrLabel='raw',
+                                     rawOrLabelHeaders='raw',
+                                     exportCheckboxLabel='false',
+                                     returnFormat='csv'))
+```
+
+```{r}
+
+start_date <- as.POSIXct("2018/4/1")
+end_date <- as.POSIXct(today()) 
+n_days <- interval(start_date,end_date)/days(1)
+allmonths <- as.data.table(start_date + days(0:n_days))
+allmonths[, visdate_ehr := as.POSIXct(x)]
+allmonths[, visdate_ehr := floor_date(visdate_ehr, unit = "week")]
+allmonths[,x:=NULL]
+allmonths <- unique(allmonths)
+
+enrolled[, redcap_data_access_group := as.character(redcap_data_access_group)]
+enrolled[redcap_data_access_group=="bellevue_hospital", redcap_data_access_group := "Bellevue Hospital Center"]
+enrolled[redcap_data_access_group=="nyu__tisch_hospita", redcap_data_access_group := "NYU Hospital - Tisch"]
+enrolled[redcap_data_access_group=="nyu__brooklyn_hosp", redcap_data_access_group := "NYU Hospital - Brooklyn"]
+enrolled[redcap_data_access_group=="brigham_and_womens", redcap_data_access_group := "Brigham and Women's Hospital"]
+enrolled[redcap_data_access_group=="beaumont__royal_oa", redcap_data_access_group := "Beaumont - Royal Oak"]
+enrolled[redcap_data_access_group=="beaumont__troy", redcap_data_access_group := "Beaumont - Troy"]
+enrolled[redcap_data_access_group=="wexner_medical_cen", redcap_data_access_group := "Ohio State University"]
+enrolled[redcap_data_access_group=="university_of_flor", redcap_data_access_group := "University of Florida Shands"]
+enrolled[redcap_data_access_group=="yale_new_haven_hos", redcap_data_access_group := "Yale New Haven Hospital"]
+enrolled[redcap_data_access_group=="hackensack_univers", redcap_data_access_group := "HUMC"]
+enrolled[redcap_data_access_group=="nyu__winthrop_hosp", redcap_data_access_group := "NYU Hospital - Winthrop"]
+enrolled[redcap_data_access_group=="ucsd_health", redcap_data_access_group := "UCSD Health"]
+enrolled[redcap_data_access_group=="uc_irvine_health", redcap_data_access_group := "UC Irvine Health"]
+enrolled[redcap_data_access_group=="ucla_medical_cente", redcap_data_access_group := "UCLA Medical Center"]
+enrolled[redcap_data_access_group=="northwestern_medic", redcap_data_access_group := "Northwestern Medicine"]
+enrolled[redcap_data_access_group=="weill_cornell", redcap_data_access_group := "Weill Cornell"]
+enrolled[redcap_data_access_group=="rush_university", redcap_data_access_group := "Rush University"]
+enrolled[redcap_data_access_group=="atlantic_health", redcap_data_access_group := "Atlantic Health"]
+colnames(enrolled)[6] <- "siteid"
+
+allmonths <- data.table(visdate_ehr = rep(allmonths$visdate_ehr, each = 18),
+                        siteid = rep(c('Atlantic Health', 'Bellevue Hospital Center',
+                                       'HUMC', 'NYU Hospital - Tisch', 
+                                       'NYU Hospital - Brooklyn', 'NYU Hospital - Winthrop', 
+                                       "Brigham and Women's Hospital",
+                                       'Beaumont - Royal Oak', 'Beaumont - Troy', 'Northwestern Medicine',
+                                       'Ohio State University', 'Rush University', 'UC Irvine Health', 'UCLA Medical Center',
+                                       'UCSD Health', 'University of Florida Shands', 
+                                       'Weill Cornell', 'Yale New Haven Hospital'), times = 1))
+allmonths[, siteid := as.character(siteid)]
+
+enrolled[, visdate_ehr := as.POSIXct(visdate_ehr)]
+enrolled[, visdate_ehr := floor_date(visdate_ehr, unit = "week")]
+enrolled[, week := week(ymd(enrolled$visdate_ehr))]
+enrolled[, month_name := lubridate::month(visdate_ehr, label = TRUE)]
+enrolled[, year := year(visdate_ehr)]
+enrolled[, today := floor_date(today(), unit = "month")]
+
+#enrolled <- enrolled[, c("visdate_ehr", "siteid", "subjid")]
+enrolled <- enrolled[!visdate_ehr=="2018-03-25",]
+
+#enrolled[, week := trunc((visdate_ehr - ymd(20180101))/dweeks(1))]
+
+
+merged_enr <- merge(enrolled, allmonths, by= c("siteid", "visdate_ehr"), all=TRUE)
+#merged_all <- merge(merged_enr, elignot, by= c("siteid", "visdate_ehr"), all=TRUE)
+
+toplot_enr <- merged_enr[, .N, keyby = .(siteid, visdate_ehr, (!is.na(subjid)))]
+toplot_enr[is.na==FALSE, N := 0]
+colnames(toplot_enr)[colnames(toplot_enr) == "N"] = "Enrolled"
+toplot_enr <- toplot_enr[, c("visdate_ehr", "Enrolled", "siteid")]
+
+#eligible not enrolled
+elignot <- screens[eligcall==1,]
+elignot[, visdate_ehr := as.POSIXct(visdate_ehr)]
+elignot[, visdate_ehr := floor_date(visdate_ehr, unit = "week")]
+elignot[, week := week(ymd(elignot$visdate_ehr))]
+elignot[, month_name := lubridate::month(visdate_ehr, label = TRUE)]
+elignot[, year := year(visdate_ehr)]
+elignot[, today := floor_date(today(), unit = "month")]
+#elignot <- elignot[,c("visdate_ehr", "siteid")]
+elignot <- elignot[!visdate_ehr=="2018-03-25",]
+
+merged_elignot <- merge(elignot, allmonths, by= c("siteid", "visdate_ehr"), all=TRUE)
+#merged_all <- merge(merged_enr, elignot, by= c("siteid", "visdate_ehr"), all=TRUE)
+
+toplot_elignot <- merged_elignot[, .N, keyby = .(siteid, visdate_ehr, (!is.na(subjid)))]
+toplot_elignot[is.na==FALSE, N := 0]
+colnames(toplot_elignot)[colnames(toplot_elignot) == "N"] = "Eligible"
+toplot_elignot <- toplot_elignot[, c("visdate_ehr", "Eligible", "siteid")]
+
+merged_all <- merge(toplot_elignot, toplot_enr, by= c("siteid", "visdate_ehr"), all=TRUE)
+merged_all <- merged_all[visdate_ehr >= "2020-03-01",]
+
+#atl <- toplot_enr[siteid=="Atlantic Health",]
+#colnames(atl)[colnames(atl) == "Enrolled"] = "enr_atl"
+#bel <- toplot_enr[siteid=="Bellevue Hospital Center",]
+#colnames(bel)[colnames(bel) == "Enrolled"] = "enr_bel"
+#hac <- toplot_enr[siteid=="HUMC",]
+#colnames(hac)[colnames(hac) == "Enrolled"] = "enr_hac"
+#tis <- toplot_enr[siteid=="NYU Hospital - Tisch",]
+#colnames(tis)[colnames(tis) == "Enrolled"] = "enr_tis"
+#brk <- toplot_enr[siteid=="NYU Hospital - Brooklyn",]
+#colnames(brk)[colnames(brk) == "Enrolled"] = "enr_brk"
+win <- merged_all[siteid=="UCSD Health", c("visdate_ehr", "siteid", "Eligible", "Enrolled")]
+#brg <- toplot_enr[siteid=="Brigham and Women's Hospital",]
+#colnames(brg)[colnames(brg) == "Enrolled"] = "enr_brg"
+#bro <- toplot_enr[siteid=="Beaumont - Royal Oak",]
+#colnames(bro)[colnames(bro) == "Enrolled"] = "enr_bro"
+#btr <- toplot_enr[siteid=="Beaumont - Troy",]
+#colnames(btr)[colnames(btr) == "Enrolled"] = "enr_btr"
+#nwe <- toplot_enr[siteid=="Northwestern Medicine",]
+#colnames(nwe)[colnames(nwe) == "Enrolled"] = "enr_nwe"
+#osu <- toplot_enr[siteid=="Ohio State University",]
+#colnames(osu)[colnames(osu) == "Enrolled"] = "enr_osu"
+#rsh <- toplot_enr[siteid=="Rush University",]
+#colnames(rsh)[colnames(rsh) == "Enrolled"] = "enr_rsh"
+#uci <- toplot_enr[siteid=="UC Irvine Health",]
+#colnames(uci)[colnames(uci) == "Enrolled"] = "enr_uci"
+#ucl <- toplot_enr[siteid=="UCLA Medical Center",]
+#colnames(ucl)[colnames(ucl) == "Enrolled"] = "enr_ucl"
+#ucd <- toplot_enr[siteid=="UCSD Health",]
+#colnames(ucd)[colnames(ucd) == "Enrolled"] = "enr_ucd"
+#ufl <- toplot_enr[siteid=="University of Florida Shands",]
+#colnames(ufl)[colnames(ufl) == "Enrolled"] = "enr_ufl"
+#wcl <- toplot_enr[siteid=="Weill Cornell",]
+#colnames(wcl)[colnames(wcl) == "Enrolled"] = "enr_wcl"
+#ynh <- toplot_enr[siteid=="Yale New Haven Hospital",]
+#colnames(ynh)[colnames(ynh) == "Enrolled"] = "enr_ynh"
+
+#toplot_enr <- cbind(atl, bel, hac, tis, brk, win, brg, bro, btr, nwe, osu, rsh, uci, ucl, ucd, ufl, wcl, ynh)
+
+graph <- as.xts.data.table(win)
+
+dygraph(graph)
+```
